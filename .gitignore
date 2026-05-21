@@ -1,6 +1,7 @@
 artifacts/raw/
 artifacts/clean/
 venv/
+.venv/
 __pycache__/
 .ipynb_checkpoints/
 artifacts/
