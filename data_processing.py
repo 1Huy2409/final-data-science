@@ -76,6 +76,12 @@ WHITESPACE_REGEX = re.compile(r"\s+")
 REPEATED_PUNCT_REGEX = re.compile(r"([!?,.;:\-_=+/\\|])\1+")
 NUMBER_TOKEN_REGEX = re.compile(r"\d[\d\.,]*")
 RANGE_SPLIT_REGEX = re.compile(r"\s*(?:\-|~|to|den|t[ơo]i|–|—)\s*", flags=re.IGNORECASE)
+# Khớp đơn vị triệu VNĐ một cách chính xác dựa trên ranh giới từ (\b).
+# Tránh khớp nhầm các từ tiếng Việt chứa chuỗi 'tr' như 'trở lên', 'trách nhiệm', 'trong'.
+MILLION_REGEX = re.compile(
+    r"\b(?:trieu|triệu)\b|\btr\b|(?<=\d)(?:tr|trieu|triệu)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -172,13 +178,33 @@ def clean_text_basic(value: Any) -> str:
     return text.strip()
 
 
+def clean_salary_text_basic(value: Any) -> str:
+    """Làm sạch văn bản trường lương — KHÔNG áp dụng PHONE_REGEX.
+
+    Lý do: PHONE_REGEX có thể khớp nhầm các dải số lương dạng
+    'X.000.000-Y.000.000 VND' (ví dụ: '10.000.000-15.000.000') vì
+    đoạn '000.000-15.000' bắt đầu bằng '0' và chứa các chữ số cách
+    nhau bởi dấu chấm/gạch nối, trông giống số điện thoại.
+    Hàm này chỉ dùng để phân tích cột 'salary'; các trường văn bản
+    dài (job_description, requirements, benefits) vẫn dùng clean_text_basic.
+    """
+    text = normalize_unicode_text(value).lower().strip()
+    text = HTML_REGEX.sub(" ", text)
+    text = URL_REGEX.sub(" ", text)
+    text = EMAIL_REGEX.sub(" ", text)
+    # Không áp dụng PHONE_REGEX để bảo toàn cấu trúc số của dải lương
+    text = REPEATED_PUNCT_REGEX.sub(r"\1", text)
+    text = WHITESPACE_REGEX.sub(" ", text)
+    return text.strip()
+
+
 def fold_accents(text: str) -> str:
     normalized = unicodedata.normalize("NFD", text)
     return "".join(ch for ch in normalized if unicodedata.category(ch) != "Mn")
 
 
 def normalize_salary_text(value: Any) -> str:
-    text = fold_accents(clean_text_basic(value))
+    text = fold_accents(clean_salary_text_basic(value))
     replacements = {
         "us$": "usd",
         "$/month": " usd ",
@@ -254,7 +280,11 @@ def infer_currency(text: str) -> str | None:
 def convert_to_million_vnd(value: float, currency: str, text: str, config: PipelineConfig) -> float:
     if currency == "usd":
         return value * config.usd_to_million_vnd
-    if any(token in text for token in ["trieu", "triệu", " tr", "tr ", " triệu"]):
+    # Dùng MILLION_REGEX (word boundary) thay vì kiểm tra chuỗi con đơn giản.
+    # Lý do: " tr" in text khớp nhầm các từ tiếng Việt như 'trở lên', 'trách nhiệm',
+    # 'trong' khiến các giá trị dạng '8,000,000 VND TRỞ LÊN' bị giữ nguyên
+    # thay vì chia cho 1,000,000, tạo ra outlier ảo 8,000,000 triệu VNĐ.
+    if MILLION_REGEX.search(text):
         return value
     if any(token in text for token in ["vnd", "vnđ", "dong", "đ"]):
         return value / 1_000_000.0
