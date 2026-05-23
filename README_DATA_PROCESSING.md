@@ -1,106 +1,154 @@
-# Data Processing Verification Guide
+# Data Processing Guide - Vietnamese Job Clustering
 
-Tai lieu nay mo ta chi tiet toan bo quy trinh xu ly du lieu cho de tai:
+Tài liệu này mô tả toàn bộ phần **Raw Data + Data Processing** cho đề tài mới:
 
-- Du doan muc luong ky vong tu Vietnamese Job Descriptions
+**Phân cụm bộ dữ liệu việc làm Việt Nam**
 
-File nay co 3 muc dich:
-- mo ta day du quy trinh data processing va target creation
-- huong dan chay lai pipeline bang notebook hoac script
-- ghi ro ket qua verify hien tai de biet phan nao da dung, phan nao can rerun
+Dataset sử dụng: `tinixai/vietnamese-job-descriptions`
 
-## 1. File lien quan
+Mục tiêu của phase này là chuẩn bị dữ liệu đầu vào đủ sạch, đủ audit và đúng yêu cầu môn học để các bước sau có thể làm feature engineering và clustering.
 
-File chinh trong project:
-- [notebooks/01_raw_data_eda.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/01_raw_data_eda.ipynb): notebook lay dataset va EDA tren raw data
-- [notebooks/02_data_processing.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/02_data_processing.ipynb): notebook chay toan bo quy trinh processing
-- [data_processing.py](/D:/H-Coding/Final-Data-Science/data_processing.py): ban script cua pipeline
+## 1. File Liên Quan
 
-Thu muc output:
-- [artifacts](/D:/H-Coding/Final-Data-Science/artifacts)
-- [artifacts/audit](/D:/H-Coding/Final-Data-Science/artifacts/audit)
-- [artifacts/figures](/D:/H-Coding/Final-Data-Science/artifacts/figures)
-- [artifacts/raw](/D:/H-Coding/Final-Data-Science/artifacts/raw)
-- [artifacts/clean](/D:/H-Coding/Final-Data-Science/artifacts/clean)
+File notebook chính:
 
-## 2. Muc tieu cua processing phase
+- [01_raw_data_eda.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/01_raw_data_eda.ipynb): tải dataset và EDA trên raw data.
+- [02_data_processing.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/02_data_processing.ipynb): notebook self-contained cho toàn bộ data processing.
 
-Quy trinh nay phai dat duoc 4 dau ra chinh:
-- `raw_data_train.csv`
-- `raw_data_test.csv`
-- `clean_data_train.csv`
-- `clean_data_test.csv`
+File backup:
 
-Dong thoi phai:
-- kiem tra chat luong raw data truoc khi clean
-- parse duoc `salary` thanh target so hoc
-- loai bo dong khong tao duoc target hop le
-- danh dau outlier nhung khong xoa mac dinh
-- xoa salary leakage khoi text modeling
-- luu lai audit files va figures cho bao cao
+- [data_processing.py](/D:/H-Coding/Final-Data-Science/data_processing.py): bản CLI/backup của pipeline, không phải file nộp chính.
 
-## 3. Nguon du lieu va cach load
+Thư mục output:
 
-Dataset nguon:
-- `tinixai/vietnamese-job-descriptions`
+- [artifacts/raw](/D:/H-Coding/Final-Data-Science/artifacts/raw): dữ liệu sau parse salary, lọc valid, deduplicate và split.
+- [artifacts/clean](/D:/H-Coding/Final-Data-Science/artifacts/clean): dữ liệu đã clean text/categorical, dùng cho feature engineering.
+- [artifacts/audit](/D:/H-Coding/Final-Data-Science/artifacts/audit): bảng audit, summary, parser test, outlier.
+- [artifacts/figures](/D:/H-Coding/Final-Data-Science/artifacts/figures): biểu đồ phục vụ báo cáo/slide.
 
-Pipeline uu tien load theo thu tu:
-1. Neu dataset da duoc cache local trong Hugging Face cache, doc truc tiep file `data.parquet`
-2. Neu chua co cache, goi:
+## 2. Thay Đổi Theo Đề Bài Mới
+
+Đề ban đầu là **dự đoán lương kỳ vọng**. Đề mới là **phân cụm dữ liệu việc làm Việt Nam**.
+
+Vì vậy pipeline đã đổi theo hướng:
+
+- `salary_expected_million_vnd` không còn là target để dự đoán, mà là **numeric feature quan trọng cho clustering**.
+- Vẫn cần parse `salary` vì đề bài yêu cầu output lương kỳ vọng và salary giúp mô tả cụm.
+- Vẫn chia **90% train / 10% test** theo yêu cầu môn học.
+- Train set dùng để feature engineering, chọn số cụm và fit thuật toán phân cụm.
+- Test set dùng để demo/kiểm tra kết quả clustering, trong đó đề yêu cầu chọn ngẫu nhiên 10 mẫu test để trình bày.
+- Không xóa salary mention trong text theo mặc định, vì đây không còn là bài toán prediction leakage. Salary mention có thể là tín hiệu ngữ cảnh hữu ích khi phân cụm.
+
+## 3. Nguồn Dữ Liệu Và Cách Thu Thập
+
+Nguồn dữ liệu:
+
+- Hugging Face dataset: `tinixai/vietnamese-job-descriptions`
+- Link: `https://huggingface.co/datasets/tinixai/vietnamese-job-descriptions`
+
+Công cụ thu thập:
+
+- Python
+- `datasets`
+- `pandas`
+
+Cách load dataset chuẩn:
 
 ```python
 from datasets import load_dataset
+
 ds = load_dataset("tinixai/vietnamese-job-descriptions")
+df = ds["train"].to_pandas()
 ```
 
-Ly do:
-- cach nay nhanh hon khi chay lai nhieu lan
-- tranh phu thuoc vao network sau khi dataset da tai ve
+Trong notebook/pipeline, dữ liệu được load theo thứ tự ưu tiên:
 
-## 4. Quy trinh xu ly du lieu chi tiet
+1. Nếu Hugging Face cache local đã có `data.parquet`, đọc trực tiếp từ cache để chạy nhanh hơn.
+2. Nếu chưa có cache, gọi `load_dataset("tinixai/vietnamese-job-descriptions")`.
 
-### Buoc 1. Raw EDA
+Đầu vào của bước thu thập:
 
-Raw EDA duoc chay truoc cleaning.
+- Dataset ID trên Hugging Face.
 
-Muc dich:
-- xac nhan schema thuc te
-- thong ke missing
-- thong ke duplicate
-- thong ke pattern cua `salary`
-- do muc leakage trong text
-- tao bang audit va figure de dua vao bao cao
+Đầu ra của bước thu thập:
 
-Raw EDA tao ra:
+- DataFrame raw chứa toàn bộ job postings.
+
+## 4. Notebook Processing Được Tổ Chức Như Thế Nào
+
+[02_data_processing.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/02_data_processing.ipynb) hiện đã được tách thành nhiều cell nhỏ, không còn gom toàn bộ code vào một cell lớn.
+
+Các phần chính trong notebook:
+
+- Cài thư viện bằng `%pip install`.
+- Imports, hằng số và cấu hình pipeline.
+- Load dataset từ Hugging Face hoặc cache local.
+- Helper làm sạch text và chuẩn hóa salary string.
+- Salary parser và target/feature creation.
+- Raw EDA và audit helpers.
+- Filtering, outlier audit, deduplicate, cleaning và split.
+- Figures, parser tests, audit tables và export helpers.
+- Pipeline runner.
+- Cell config chạy thực tế.
+- Cell test parser.
+- Cell run processing và export.
+- Cell validate output files.
+- Cell preview dữ liệu sạch.
+
+Bạn có thể bấm **Run All** để chạy toàn bộ, nhưng lần đầu nên đổi `sample_size=5000` để test nhanh trước.
+
+## 5. Quy Trình Xử Lý Dữ Liệu
+
+### Bước 1. Raw EDA
+
+Raw EDA được thực hiện trước processing để hiểu chất lượng dữ liệu gốc.
+
+Mục tiêu:
+
+- Xác nhận schema thực tế.
+- Thống kê số dòng, số cột, kiểu dữ liệu.
+- Thống kê missing value.
+- Thống kê duplicate.
+- Khảo sát pattern của `salary`.
+- Khảo sát các cột categorical chính.
+- Khảo sát độ dài text.
+- Kiểm tra salary mention trong các trường text.
+- Xuất bảng audit và figure phục vụ báo cáo.
+
+Output raw EDA:
+
 - `raw_schema_summary.csv`
 - `raw_missing_summary.csv`
 - `raw_text_length_summary.csv`
 - `raw_salary_pattern_summary.csv`
 - `raw_duplicate_summary.csv`
 - `raw_top_values.csv`
-- `raw_salary_leakage_summary.csv`
+- `raw_salary_mention_summary.csv`
 - `raw_salary_outlier_examples.csv`
 - `raw_rule_candidates.json`
 
-### Buoc 2. Chuan hoa chuoi salary
+### Bước 2. Chuẩn Hóa Chuỗi Salary
 
-Cac xu ly chinh:
-- lowercase
-- normalize unicode
-- bo khoang trang thua
-- chuan hoa dau phan cach nhu `-`, `~`, `to`
-- chuan hoa token don vi nhu:
-  - `usd`, `$`
-  - `trieu`, `triệu`, `tr`
-  - `vnd`, `vnđ`
+Cột `salary` ban đầu là text, có nhiều format khác nhau.
 
-Vi du:
-- `26 - 36 triệu` -> `26 - 36 trieu`
-- `1,200 usd` -> `1200 usd`
+Pipeline chuẩn hóa:
 
-### Buoc 3. Phan loai salary
+- Lowercase.
+- Normalize Unicode.
+- Chuẩn hóa whitespace.
+- Chuẩn hóa dấu phân cách range như `-`, `~`, `to`.
+- Chuẩn hóa đơn vị tiền tệ như `usd`, `$`, `triệu`, `tr`, `vnd`, `vnđ`.
 
-Moi dong `salary` duoc phan loai thanh:
+Ví dụ:
+
+- `26 - 36 triệu` được hiểu là khoảng 26 đến 36 triệu VND.
+- `4000 usd` được hiểu là 4000 USD.
+- `14.000.000 - 20.000.000 vnd` được hiểu là 14 đến 20 triệu VND.
+
+### Bước 3. Phân Loại Salary
+
+Mỗi dòng salary được phân loại thành một trong các nhóm:
+
 - `range_vnd`
 - `single_vnd`
 - `range_usd`
@@ -111,16 +159,18 @@ Moi dong `salary` duoc phan loai thanh:
 - `invalid`
 - `missing`
 
-Y nghia:
-- `range_*`: co khoang luong min-max
-- `single_*`: co 1 muc luong don
-- `unknown`: co so nhung khong xac dinh duoc don vi
-- `ambiguous`: dang mo ho nhu `thoa thuan`, `cạnh tranh`
-- `invalid`: khong parse duoc co nghia
+Ý nghĩa:
 
-### Buoc 4. Tao target
+- `range_*`: có khoảng lương min-max.
+- `single_*`: có một mức lương đơn.
+- `unknown`: có số nhưng không xác định được đơn vị.
+- `ambiguous`: mơ hồ như `thỏa thuận`, `cạnh tranh`, `negotiable`.
+- `invalid`: không parse được thành thông tin lương có nghĩa.
 
-Sau khi parse salary, pipeline tao cac cot:
+### Bước 4. Tạo Feature Lương Kỳ Vọng
+
+Pipeline tạo các cột:
+
 - `salary_raw_normalized`
 - `salary_pattern`
 - `salary_currency`
@@ -128,89 +178,113 @@ Sau khi parse salary, pipeline tao cac cot:
 - `salary_max`
 - `salary_expected_million_vnd`
 - `salary_parse_status`
+- `salary_range_width`
 
-Cong thuc target:
+Công thức:
 
 ```text
 salary_expected_million_vnd = (salary_min + salary_max) / 2
 ```
 
-Neu la salary don:
-- `salary_min = salary_max = muc luong do`
+Nếu salary là mức đơn:
 
-Quy doi don vi:
-- VND -> chia `1_000_000`
-- USD -> nhan ty gia mac dinh `25,000 VND/USD`, sau do doi sang `million_vnd`
+```text
+salary_min = salary_max
+salary_expected_million_vnd = salary_min
+```
 
-Vi du:
-- `4000 usd` -> `100.0` trieu VND
+Quy đổi:
+
+- VND được đổi về triệu VND bằng cách chia `1_000_000`.
+- USD được quy đổi theo tỷ giá cố định `25,000 VND/USD`, sau đó đổi sang triệu VND.
+
+Ví dụ parser hiện tại:
+
 - `26 - 36 triệu` -> `31.0`
+- `15 - 35 triệu` -> `25.0`
+- `4000 usd` -> `100.0`
+- `1200 usd` -> `30.0`
+- `14.000.000 - 20.000.000 vnd` -> `17.0`
+- `thỏa thuận` -> không hợp lệ/ambiguous
+- `đang cập nhật` -> invalid
 
-### Buoc 5. Loai dong khong tao duoc target hop le
+### Bước 5. Lọc Dòng Có Salary Không Hợp Lệ
 
-Chi giu lai cac dong thoa man:
+Vì salary là feature quan trọng của clustering, pipeline v1 chỉ giữ các dòng có salary rõ ràng.
+
+Điều kiện giữ:
+
 - `salary_parse_status == "valid"`
 - `salary_expected_million_vnd > 0`
 - `salary_min <= salary_max`
-- target khong null
-- target khong infinite
+- `salary_expected_million_vnd` không null
+- `salary_expected_million_vnd` không infinite
 
-He qua:
-- nhom chon huong conservative
-- uu tien target sach hon thay vi co gang cuu moi dong salary mo ho
+Các dòng bị loại:
 
-### Buoc 6. Outlier audit
+- salary mơ hồ
+- salary invalid
+- salary không có đơn vị rõ
+- salary null hoặc không tạo được numeric feature hợp lệ
 
-Outlier duoc xu ly theo huong:
-- audit va gan co
-- khong xoa mac dinh
+Lý do chọn hướng này:
 
-Thong ke duoc tinh:
+- Ưu tiên feature salary sạch.
+- Giảm nhiễu cho clustering.
+- Các dòng salary mơ hồ có thể xử lý ở version sau nếu cần, nhưng không nên trộn vào v1.
+
+### Bước 6. Outlier Audit
+
+Outlier salary không bị xóa mặc định. Pipeline chỉ audit và gắn cờ.
+
+Các thống kê được tính:
+
 - `Q1`
 - `Q3`
 - `IQR`
 - `P1`
 - `P99`
+- `lower_iqr`
+- `upper_iqr`
 
-Cot tao them:
+Cột tạo thêm:
+
 - `is_salary_outlier`
 - `outlier_reason`
 
-Rule:
-- nho hon nguong IQR lower hoac percentile P1
-- lon hon nguong IQR upper hoac percentile P99
+Rule gắn cờ:
 
-Y nghia:
-- nhom van giu du lieu cuc tri de danh gia sau
-- modeling phase co the thu 2 kich ban: giu outlier va loai outlier
+- Nhỏ hơn ngưỡng IQR lower hoặc P1.
+- Lớn hơn ngưỡng IQR upper hoặc P99.
 
-### Buoc 7. Deduplicate
+Ý nghĩa:
 
-Pipeline xu ly 3 muc:
-- duplicate theo `id`
-- duplicate hoan toan theo hang
-- near duplicate theo:
-  - `job_title + company_name + location + salary`
+- Người làm feature engineering/clustering có thể thử 2 kịch bản: giữ outlier hoặc loại outlier.
+- Báo cáo có thể trình bày outlier như một phần chất lượng dữ liệu.
 
-Rule hien tai:
-- drop duplicate theo `id`
-- drop duplicate hoan toan
-- near duplicate chi gan co trong audit file, khong xoa hang loat mac dinh
+### Bước 7. Deduplicate
 
-### Buoc 8. Split train/test
+Pipeline xử lý duplicate theo 3 lớp:
 
-Split su dung:
-- `train_test_split`
-- `test_size = 0.2`
-- `random_state = 42`
+- Duplicate theo `id`.
+- Duplicate toàn bộ row.
+- Near-duplicate theo `job_title + company_name + location + salary`.
 
-Neu phan phoi target cho phep:
-- tao bin theo `salary_expected_million_vnd`
-- stratify theo bin de train/test can bang hon
+Rule hiện tại:
 
-### Buoc 9. Clean text
+- Drop duplicate theo `id`.
+- Drop duplicate toàn bộ row.
+- Near-duplicate được xuất audit, không xóa hàng loạt mặc định.
 
-Ap dung cho cac cot:
+Output:
+
+- `raw_duplicate_summary.csv`
+- `near_duplicate_audit.csv`
+
+### Bước 8. Clean Text Và Categorical
+
+Áp dụng cho các cột:
+
 - `job_title`
 - `company_name`
 - `location`
@@ -223,190 +297,302 @@ Ap dung cho cac cot:
 - `benefits`
 - `requirements`
 
-Rule:
-- lowercase
-- normalize unicode
-- bo HTML
-- bo URL
-- bo email
-- bo phone
-- bo ky tu lap vo nghia
-- chuan hoa whitespace
-- chuyen rong thanh `unknown`
+Rule cleaning:
 
-Khong lam o phase nay:
-- stemming
-- stopword removal
-- tokenization
-- TF-IDF
-- encoding feature
+- Lowercase.
+- Normalize Unicode.
+- Bỏ HTML.
+- Bỏ URL.
+- Bỏ email.
+- Bỏ phone.
+- Bỏ ký tự lặp vô nghĩa.
+- Chuẩn hóa whitespace.
+- Chuyển chuỗi rỗng thành `unknown`.
 
-### Buoc 10. Remove salary leakage
+Không làm ở phase Người 1:
 
-Chi ap dung cho:
-- `job_description`
-- `benefits`
-- `requirements`
+- Stemming.
+- Stopword removal.
+- Tokenization đặc thù.
+- TF-IDF.
+- One-hot encoding.
+- Scaling.
+- Clustering model.
 
-Muc tieu:
-- tranh cho mo hinh hoc truc tiep tu thong tin salary xuat hien trong text
+Các bước trên thuộc phần Người 2/Người 3.
 
-Xoa:
-- so tien ro rang
-- khoang luong
-- cum salary co gan gia tri luong
+### Bước 9. Không Remove Salary Mention Mặc Định
 
-Vi du:
-- `15 triệu`
-- `20.000.000`
-- `1200 usd`
-- `23-28 triệu`
+Khác với bài toán dự đoán lương, bài toán hiện tại là phân cụm.
 
-Sau step nay:
-- clean data phai khong con salary leakage ro rang trong 3 cot text chinh
+Vì vậy:
 
-### Buoc 11. Export
+- `remove_salary_mentions=False` mặc định.
+- Text vẫn được clean cơ bản.
+- Salary mention không bị xóa hàng loạt.
 
-4 file du lieu:
+Lý do:
+
+- Trong clustering, salary mention có thể là tín hiệu giúp mô tả nhóm việc làm.
+- Không còn rủi ro target leakage theo nghĩa supervised prediction.
+
+Pipeline vẫn ghi audit:
+
+- `clean_salary_mention_summary.csv`
+- `clean_salary_leakage_summary.csv` alias tương thích với tên cũ
+
+### Bước 10. Split 90/10
+
+Split được thực hiện sau khi:
+
+1. Parse salary.
+2. Lọc salary hợp lệ.
+3. Audit outlier.
+4. Deduplicate.
+5. Clean text/categorical.
+
+Cấu hình:
+
+- `test_size = 0.1`
+- `random_state = 42`
+- Nếu có thể, stratify theo bin của `salary_expected_million_vnd`.
+
+Ý nghĩa:
+
+- Train 90%: dùng cho feature engineering, chọn số cụm, fit clustering.
+- Test 10%: dùng để demo và kiểm tra kết quả phân cụm.
+
+Lưu ý:
+
+- Đây không phải train/test theo nghĩa supervised prediction.
+- Split này tồn tại để bám yêu cầu môn học và để có tập demo không trùng train.
+
+### Bước 11. Export
+
+Pipeline xuất 4 file chính theo naming mới:
+
+- [cluster_train_raw.csv](/D:/H-Coding/Final-Data-Science/artifacts/raw/cluster_train_raw.csv)
+- [cluster_test_raw.csv](/D:/H-Coding/Final-Data-Science/artifacts/raw/cluster_test_raw.csv)
+- [cluster_train_clean.csv](/D:/H-Coding/Final-Data-Science/artifacts/clean/cluster_train_clean.csv)
+- [cluster_test_clean.csv](/D:/H-Coding/Final-Data-Science/artifacts/clean/cluster_test_clean.csv)
+
+Đồng thời giữ alias cũ để tương thích yêu cầu nộp:
+
 - [raw_data_train.csv](/D:/H-Coding/Final-Data-Science/artifacts/raw/raw_data_train.csv)
 - [raw_data_test.csv](/D:/H-Coding/Final-Data-Science/artifacts/raw/raw_data_test.csv)
 - [clean_data_train.csv](/D:/H-Coding/Final-Data-Science/artifacts/clean/clean_data_train.csv)
 - [clean_data_test.csv](/D:/H-Coding/Final-Data-Science/artifacts/clean/clean_data_test.csv)
 
-Y nghia:
-- `raw_*`: da co target hop le va split, nhung chua clean text sau cung
-- `clean_*`: da clean text va xoa leakage, san sang cho feature engineering
+Ý nghĩa:
 
-## 5. Cach chay lai pipeline
+- `cluster_*_raw.csv`: dữ liệu đã có salary feature hợp lệ, đã split, chưa clean text/categorical sâu.
+- `cluster_*_clean.csv`: dữ liệu đã clean cơ bản, sẵn sàng cho feature engineering.
+- `raw_data_*` và `clean_data_*`: alias để đáp ứng format nộp bài nếu giảng viên yêu cầu tên file này.
 
-### Bang notebook
+## 6. Audit Và Metadata Output
 
-1. Mo [01_raw_data_eda.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/01_raw_data_eda.ipynb)
-2. Chay raw EDA tu tren xuong duoi
-3. Mo [02_data_processing.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/02_data_processing.ipynb)
-4. Cell dau tien cai thu vien
-5. Chinh:
+Các file audit quan trọng:
+
+- `processing_summary.csv`: số dòng qua từng bước processing.
+- `salary_parse_audit.csv`: thống kê parse status và salary pattern.
+- `salary_parser_tests.csv`: kết quả test parser bằng các ví dụ mẫu.
+- `salary_outlier_summary.csv`: ngưỡng outlier và số lượng outlier.
+- `salary_outlier_examples.csv`: ví dụ outlier để review thủ công.
+- `raw_duplicate_summary.csv`: thống kê duplicate raw.
+- `near_duplicate_audit.csv`: các dòng near-duplicate.
+- `train_test_salary_distribution.csv`: phân phối salary train/test.
+- `data_dictionary.csv`: mô tả role các cột cho downstream.
+
+Các figure quan trọng:
+
+- `raw_salary_patterns.png`
+- `raw_text_length_boxplot.png`
+- `salary_string_length_hist.png`
+- `top_job_industry.png`
+- `top_location.png`
+- `top_job_type.png`
+- `top_experience_level.png`
+- `top_education_level.png`
+- `top_job_position.png`
+- `salary_feature_distribution_by_split.png`
+- `salary_feature_boxplot.png`
+- `outlier_flag_ratio.png`
+
+## 7. Cách Chạy Notebook
+
+Khuyến nghị chạy lần đầu:
+
+1. Mở [02_data_processing.ipynb](/D:/H-Coding/Final-Data-Science/notebooks/02_data_processing.ipynb).
+2. Chạy cell đầu tiên để cài thư viện.
+3. Chạy các cell định nghĩa hàm từ trên xuống.
+4. Ở cell cấu hình, test nhanh bằng:
 
 ```python
-config.sample_size = 5000
+sample_size=5000
 ```
 
-de test nhanh, hoac:
+5. Chạy tiếp đến hết notebook.
+6. Nếu sample chạy ổn, đổi lại:
 
 ```python
-config.sample_size = None
+sample_size=None
 ```
 
-de chay full dataset
+7. Bấm **Run All** để xử lý full dataset.
 
-### Bang script
+Cell quan trọng nhất để tạo file output là:
 
-Raw EDA:
-
-```bash
-python data_processing.py --mode eda --data-dir artifacts
+```python
+results = run_processing_pipeline(config)
 ```
 
-Processing sample:
+Nếu chỉ chạy đến trước cell này thì notebook mới định nghĩa hàm, chưa tạo output mới.
 
-```bash
-python data_processing.py --mode process --data-dir artifacts --sample-size 5000
+## 8. Kết Quả Verify Hiện Tại
+
+Dựa trên artifact hiện tại trong `artifacts/audit`, full processing đã tạo được output với số liệu:
+
+```text
+raw_rows                         606,878
+salary_valid_rows_before_dedup   587,904
+rows_after_dedup                 587,904
+train_rows                       529,113
+test_rows                         58,791
+test_size                            0.1
+random_state                          42
+remove_salary_mentions             False
 ```
 
-Processing full:
+Salary parse status:
 
-```bash
-python data_processing.py --mode process --data-dir artifacts
+```text
+valid              595,397
+invalid              7,562
+ambiguous            3,408
+unknown_currency       510
+missing                  1
 ```
 
-## 6. Ket qua verify hien tai
+Salary pattern phổ biến:
 
-### Da verify duoc
+```text
+range_vnd      585,281
+single_vnd       9,932
+invalid          7,562
+ambiguous        3,408
+range_unknown      350
+single_unknown     153
+single_usd          99
+range_usd           92
+missing              1
+```
 
-1. File output ton tai va doc duoc
-- `raw_data_train.csv` ton tai
-- `raw_data_test.csv` ton tai
-- `clean_data_train.csv` ton tai
-- `clean_data_test.csv` ton tai
+Train/test salary distribution:
 
-2. Tren preview 5000 dong cua cac file export:
-- tat ca `salary_parse_status` deu la `valid`
-- tat ca target deu duong
-- tat ca `salary_min <= salary_max`
+```text
+train rows: 529,113
+test rows:   58,791
+train ratio: 0.899999
+test ratio:  0.100001
+train mean salary: 13.706397
+test mean salary:  13.647551
+train median salary: 12.0
+test median salary:  12.0
+```
 
-3. Leakage removal dang hoat dong dung tren clean data preview
-- preview `raw_data_*`: leakage ratio tren 3 cot text chinh con khoang `0.17`
-- preview `clean_data_*`: leakage ratio tren 3 cot text chinh = `0.0`
+Outlier summary:
 
-4. Tren sample 20,000 dong parse truc tiep tu dataset goc:
-- `valid`: `12,522`
-- `invalid`: `6,945`
-- `unknown_currency`: `492`
-- `ambiguous`: `41`
+```text
+Q1: 9.0
+Q3: 15.0
+P1: 2.5
+P99: 40.0
+IQR: 6.0
+lower_iqr: 0.0
+upper_iqr: 24.0
+outlier_count: 42,442
+```
 
-Mot so salary parse mau:
-- `26 - 36 triệu` -> `31.0`
-- `15 - 35 triệu` -> `25.0`
-- `4000 usd` -> `100.0`
-- `1200 usd` -> `30.0`
+Kết luận verify:
 
-5. Tren sample 50,000 dong, split hien tai can bang tot
-- mean train: `13.9366`
-- mean test: `13.8554`
-- median train = median test = `12.5`
+- Split 90/10 hiện tại đúng yêu cầu.
+- Train/test có median salary giống nhau và mean gần nhau, không lệch bất thường.
+- Parser salary đang hoạt động ổn với phần lớn dataset.
+- Các dòng salary không rõ đã được loại khỏi dataset clustering v1.
+- Outlier được gắn cờ nhưng chưa xóa.
+- `remove_salary_mentions=False`, đúng với hướng bài toán phân cụm.
 
-Ket luan tu cac buoc tren:
-- logic parser va target creation hien tai la hop ly theo huong conservative
-- leakage removal dang dung
-- split logic trong code hien tai co ve dung khi test lai tren sample lon
+## 9. Tiêu Chí Kiểm Tra Chất Lượng
 
-### Van de phat hien khi verify full artifact hien tai
+Sau khi chạy lại processing, cần kiểm tra:
 
-File audit full trong `artifacts/` dang cho:
-- train mean: `30.7149`
-- test mean: `13.6802`
+- `salary_parser_tests.csv` có tất cả test case pass.
+- Mọi dòng trong train/test có `salary_parse_status == "valid"`.
+- Mọi dòng có `salary_expected_million_vnd > 0`.
+- Mọi dòng có `salary_min <= salary_max`.
+- Train/test không trùng nhau theo `id`.
+- Train/test có cùng schema.
+- Tỷ lệ train/test xấp xỉ 90/10.
+- `train_test_salary_distribution.csv` không cho thấy lệch bất thường.
+- 4 file output chính đọc lại được bằng `pandas`.
 
-Do lech nay qua lon va khong phu hop voi ket qua verify tren sample 50k.
+## 10. Bàn Giao Cho Feature Engineering Và Clustering
 
-Dieu nay cho thay:
-- code hien tai co kha nang da dung
-- nhung full artifact dang luu trong `artifacts/` co the la output cu/stale tu mot lan run truoc, hoac mot lan run dang do
+Người 2 có thể dùng:
 
-Noi cach khac:
-- **pipeline logic hien tai: tam on**
-- **full artifact hien tai trong `artifacts/`: chua nen coi la da verify xong 100%**
+- `cluster_train_clean.csv`
+- `cluster_test_clean.csv`
+- `data_dictionary.csv`
+- `salary_outlier_summary.csv`
+- `train_test_salary_distribution.csv`
 
-## 7. Danh gia tong the: processing va target creation da dung chua?
+Cột numeric khuyến nghị:
 
-Danh gia trung thuc:
+- `salary_expected_million_vnd`
+- `salary_min`
+- `salary_max`
+- `salary_range_width`
+- `is_salary_outlier`
 
-- **Dung o muc logic xu ly**:
-  - parser salary hoat dong hop ly voi pattern pho bien
-  - target `salary_expected_million_vnd` duoc tao dung theo yeu cau bai
-  - clean text va leakage removal dung theo muc tieu do an
-  - outlier duoc audit thay vi xoa vo co
+Cột categorical khuyến nghị:
 
-- **Chua the ket luan full output hien tai da dung hoan toan**:
-  - vi train/test distribution trong artifact full dang lech bat thuong
-  - can rerun full processing va kiem tra lai file `train_test_target_distribution.csv`
+- `location`
+- `job_type`
+- `job_industry`
+- `experience_level`
+- `education_level`
+- `job_position`
 
-## 8. Viec nen lam ngay
+Cột text khuyến nghị:
 
-De chot dataset clean dung va an toan cho modeling:
+- `job_title`
+- `job_description`
+- `requirements`
+- `benefits`
+- `company_name`
 
-1. Chay lai full processing bang code hien tai
-2. Kiem tra lai:
-   - `train_test_target_distribution.csv`
-   - mean va median train/test
-   - leakage ratio cua clean files
-3. Neu train/test mean sau rerun gan nhau hon, co the coi full pipeline da on
+Gợi ý tạo `final_text` ở phase sau:
 
-## 9. Ket luan ngan
+```text
+job_title + job_description + requirements + benefits + location + job_industry + experience_level
+```
 
-Hien tai:
-- quy trinh xu ly data duoc thiet ke dung huong
-- target creation theo yeu cau mon hoc la dung
-- clean/leakage removal dang hoat dong dung
+Lưu ý cho Người 2/Người 3:
 
-Nhung:
-- full artifact dang luu trong `artifacts/` can duoc rerun va verify lai 1 lan cuoi truoc khi dua sang phase modeling
+- Không cần fit clustering trên test set.
+- Test set dùng để demo/kiểm tra nhãn cụm sau khi model hoặc pipeline clustering đã fit trên train.
+- Nếu loại outlier ở phase sau, phải ghi rõ rule và so sánh kết quả trước/sau.
+
+## 11. Tóm Tắt Ngắn Gọn
+
+Pipeline hiện tại đã phù hợp với đề phân cụm mới:
+
+- Dùng toàn bộ dataset Tinix Job Description.
+- Parse salary để tạo `salary_expected_million_vnd`.
+- Chỉ giữ salary rõ ràng cho clustering v1.
+- Audit outlier, không xóa mặc định.
+- Clean text/categorical cơ bản.
+- Không remove salary mention mặc định.
+- Split 90% train / 10% test.
+- Xuất đầy đủ raw/clean train/test và audit files.
+

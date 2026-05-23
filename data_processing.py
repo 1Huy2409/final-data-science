@@ -89,9 +89,10 @@ class PipelineConfig:
     data_dir: Path = Path("artifacts")
     dataset_id: str = DATASET_ID
     usd_to_vnd: float = 25000.0
-    test_size: float = 0.2
+    test_size: float = 0.1
     random_state: int = 42
     sample_size: int | None = None
+    remove_salary_mentions: bool = False
 
     @property
     def usd_to_million_vnd(self) -> float:
@@ -416,10 +417,11 @@ def salary_length_flags(series: pd.Series) -> pd.DataFrame:
 
 
 def raw_rule_candidates(df: pd.DataFrame) -> dict[str, Any]:
-    leakage_ratios = {column: float(detect_salary_mentions(df[column]).mean()) for column in LONG_TEXT_COLUMNS}
+    salary_mention_ratios = {column: float(detect_salary_mentions(df[column]).mean()) for column in LONG_TEXT_COLUMNS}
     return {
         "remove_ambiguous_salary_keywords": AMBIGUOUS_SALARY_KEYWORDS,
-        "high_leakage_columns": sorted(leakage_ratios, key=leakage_ratios.get, reverse=True),
+        "default_remove_salary_mentions_for_clustering": False,
+        "high_salary_mention_columns": sorted(salary_mention_ratios, key=salary_mention_ratios.get, reverse=True),
         "top_salary_patterns": salary_pattern_summary(df).head(10).to_dict(orient="records"),
     }
 
@@ -450,11 +452,14 @@ def create_raw_eda_figures(df: pd.DataFrame, output_dir: Path) -> None:
     ax.tick_params(axis="x", rotation=20)
     save_plot(fig, output_dir / "raw_text_length_boxplot.png")
 
-    leakage = pd.Series({column: detect_salary_mentions(df[column]).mean() for column in LONG_TEXT_COLUMNS})
+    salary_mentions = pd.Series({column: detect_salary_mentions(df[column]).mean() for column in LONG_TEXT_COLUMNS})
     fig, ax = plt.subplots(figsize=(8, 5))
-    leakage.sort_values().plot.barh(ax=ax, color="#bc4749")
-    ax.set_title("Salary leakage ratio by text column")
-    save_plot(fig, output_dir / "salary_leakage_ratio.png")
+    salary_mentions.sort_values().plot.barh(ax=ax, color="#bc4749")
+    ax.set_title("Salary mention ratio by text column")
+    fig.tight_layout()
+    fig.savefig(output_dir / "salary_mention_ratio.png", dpi=200, bbox_inches="tight")
+    fig.savefig(output_dir / "salary_leakage_ratio.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(10, 5))
     salary_length_flags(df["salary"])["salary_length"].clip(upper=120).plot.hist(ax=ax, bins=40, color="#6d597a")
@@ -471,8 +476,14 @@ def run_raw_eda(config: PipelineConfig) -> pd.DataFrame:
     salary_pattern_summary(df).to_csv(config.audit_dir / "raw_salary_pattern_summary.csv", index=False)
     duplicate_summary(df).to_csv(config.audit_dir / "raw_duplicate_summary.csv", index=False)
     top_value_summary(df, CATEGORICAL_COLUMNS).to_csv(config.audit_dir / "raw_top_values.csv", index=False)
-    leakage_summary = pd.DataFrame([{"column": column, "leakage_ratio": float(detect_salary_mentions(df[column]).mean())} for column in LONG_TEXT_COLUMNS])
-    leakage_summary.to_csv(config.audit_dir / "raw_salary_leakage_summary.csv", index=False)
+    salary_mention_summary = pd.DataFrame(
+        [{"column": column, "salary_mention_ratio": float(detect_salary_mentions(df[column]).mean())} for column in LONG_TEXT_COLUMNS]
+    )
+    salary_mention_summary.to_csv(config.audit_dir / "raw_salary_mention_summary.csv", index=False)
+    salary_mention_summary.rename(columns={"salary_mention_ratio": "leakage_ratio"}).to_csv(
+        config.audit_dir / "raw_salary_leakage_summary.csv",
+        index=False,
+    )
     raw_outliers = pd.concat([df[["id", "salary"]].reset_index(drop=True), salary_length_flags(df["salary"])], axis=1)
     raw_outliers.sort_values(["salary_has_multiple_currencies", "salary_length"], ascending=[False, False]).head(200).to_csv(
         config.audit_dir / "raw_salary_outlier_examples.csv",
@@ -561,14 +572,22 @@ def remove_salary_leakage(text: Any) -> str:
     return cleaned or "unknown"
 
 
-def apply_cleaning(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+def apply_cleaning(df: pd.DataFrame, remove_salary_mentions: bool = False) -> tuple[pd.DataFrame, pd.DataFrame]:
     cleaned = fill_unknowns(df)
     logs = []
     for column in LONG_TEXT_COLUMNS:
         original = cleaned[column].astype(str)
-        had_leakage = original.map(lambda value: bool(SALARY_LEAKAGE_REGEX.search(value)))
-        cleaned[column] = original.map(remove_salary_leakage)
-        logs.append({"column": column, "rows_with_leakage": int(had_leakage.sum()), "leakage_ratio": float(had_leakage.mean())})
+        had_salary_mentions = original.map(lambda value: bool(SALARY_LEAKAGE_REGEX.search(value)))
+        if remove_salary_mentions:
+            cleaned[column] = original.map(remove_salary_leakage)
+        logs.append(
+            {
+                "column": column,
+                "rows_with_salary_mentions": int(had_salary_mentions.sum()),
+                "salary_mention_ratio": float(had_salary_mentions.mean()),
+                "salary_mentions_removed": bool(remove_salary_mentions),
+            }
+        )
     return cleaned, pd.DataFrame(logs)
 
 
@@ -597,13 +616,19 @@ def create_cleaning_figures(df: pd.DataFrame, output_dir: Path) -> None:
     fig, ax = plt.subplots(figsize=(10, 5))
     sns.histplot(data=df, x="salary_expected_million_vnd", hue="split", bins=40, element="step", stat="density", common_norm=False, ax=ax)
     ax.set_xlim(left=0)
-    ax.set_title("Target distribution by split")
-    save_plot(fig, output_dir / "target_distribution_by_split.png")
+    ax.set_title("Salary feature distribution by split")
+    fig.tight_layout()
+    fig.savefig(output_dir / "target_distribution_by_split.png", dpi=200, bbox_inches="tight")
+    fig.savefig(output_dir / "salary_feature_distribution_by_split.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     sns.boxplot(data=df, x="salary_expected_million_vnd", ax=ax, color="#8d99ae", showfliers=False)
-    ax.set_title("Salary target boxplot")
-    save_plot(fig, output_dir / "salary_target_boxplot.png")
+    ax.set_title("Salary feature boxplot")
+    fig.tight_layout()
+    fig.savefig(output_dir / "salary_target_boxplot.png", dpi=200, bbox_inches="tight")
+    fig.savefig(output_dir / "salary_feature_boxplot.png", dpi=200, bbox_inches="tight")
+    plt.close(fig)
 
     fig, ax = plt.subplots(figsize=(8, 5))
     df["is_salary_outlier"].value_counts().rename(index={True: "outlier", False: "not_outlier"}).plot.pie(
@@ -614,40 +639,178 @@ def create_cleaning_figures(df: pd.DataFrame, output_dir: Path) -> None:
     save_plot(fig, output_dir / "outlier_flag_ratio.png")
 
 
-def run_processing_pipeline(config: PipelineConfig) -> dict[str, Any]:
-    ensure_directories(config)
-    df = download_dataset(config.sample_size, config.dataset_id)
-    df = add_salary_features(df, config)
-    df = mark_invalid_targets(df)
-    valid_df = df.loc[df["target_is_valid"]].copy()
-    valid_df, outlier_summary = flag_outliers(valid_df)
-    valid_df, near_duplicate_audit = deduplicate(valid_df)
-    raw_train, raw_test = split_dataset(valid_df, config)
-    clean_train, leakage_train = apply_cleaning(raw_train)
-    clean_test, leakage_test = apply_cleaning(raw_test)
+def parser_test_cases(config: PipelineConfig) -> pd.DataFrame:
+    test_cases = [
+        {"salary": "26 - 36 triệu", "expected": 31.0, "expected_status": "valid"},
+        {"salary": "15 - 35 triệu", "expected": 25.0, "expected_status": "valid"},
+        {"salary": "4000 usd", "expected": 100.0, "expected_status": "valid"},
+        {"salary": "1200 usd", "expected": 30.0, "expected_status": "valid"},
+        {"salary": "14.000.000 - 20.000.000 vnd", "expected": 17.0, "expected_status": "valid"},
+        {"salary": "thỏa thuận", "expected": np.nan, "expected_status": "ambiguous"},
+        {"salary": "đang cập nhật", "expected": np.nan, "expected_status": "invalid"},
+    ]
+    rows = []
+    for case in test_cases:
+        parsed = parse_salary_row(case["salary"], config)
+        actual = parsed["salary_expected_million_vnd"]
+        expected = case["expected"]
+        if np.isnan(expected):
+            value_ok = pd.isna(actual)
+        else:
+            value_ok = abs(float(actual) - expected) < 1e-9
+        status_ok = parsed["salary_parse_status"] == case["expected_status"]
+        rows.append({**case, **parsed, "value_ok": value_ok, "status_ok": status_ok, "passed": bool(value_ok and status_ok)})
+    return pd.DataFrame(rows)
 
-    leakage_logs = (
-        pd.concat([leakage_train.assign(split="train"), leakage_test.assign(split="test")], ignore_index=True)
-        .groupby("column", as_index=False)
-        .agg(rows_with_leakage=("rows_with_leakage", "sum"), leakage_ratio=("leakage_ratio", "mean"))
+
+def salary_parse_audit(df: pd.DataFrame) -> pd.DataFrame:
+    status_counts = (
+        df["salary_parse_status"]
+        .value_counts(dropna=False)
+        .rename_axis("value")
+        .reset_index(name="count")
     )
+    status_counts.insert(0, "audit_type", "salary_parse_status")
+    pattern_counts = (
+        df["salary_pattern"]
+        .value_counts(dropna=False)
+        .rename_axis("value")
+        .reset_index(name="count")
+    )
+    pattern_counts.insert(0, "audit_type", "salary_pattern")
+    audit = pd.concat([status_counts, pattern_counts], ignore_index=True)
+    audit["ratio"] = audit["count"] / len(df)
+    return audit
 
+
+def data_dictionary() -> pd.DataFrame:
+    rows = [
+        {"column": "salary_expected_million_vnd", "role": "numeric_feature", "description": "Expected salary in million VND, used as a clustering feature."},
+        {"column": "salary_min", "role": "numeric_audit", "description": "Lower salary bound in million VND."},
+        {"column": "salary_max", "role": "numeric_audit", "description": "Upper salary bound in million VND."},
+        {"column": "salary_range_width", "role": "numeric_feature_candidate", "description": "Difference between salary_max and salary_min."},
+        {"column": "is_salary_outlier", "role": "audit_flag", "description": "Salary outlier flag; not removed by default."},
+        {"column": "job_title", "role": "text_feature", "description": "Job title text."},
+        {"column": "job_description", "role": "text_feature", "description": "Job description text."},
+        {"column": "requirements", "role": "text_feature", "description": "Requirements text."},
+        {"column": "benefits", "role": "text_feature", "description": "Benefits text."},
+        {"column": "location", "role": "categorical_feature", "description": "Job location."},
+        {"column": "job_type", "role": "categorical_feature", "description": "Job type."},
+        {"column": "job_industry", "role": "categorical_feature", "description": "Job industry."},
+        {"column": "experience_level", "role": "categorical_feature", "description": "Experience level."},
+        {"column": "education_level", "role": "categorical_feature", "description": "Education level."},
+        {"column": "job_position", "role": "categorical_feature", "description": "Job position."},
+    ]
+    return pd.DataFrame(rows)
+
+
+def processing_summary(
+    raw_rows: int,
+    parsed_df: pd.DataFrame,
+    valid_rows_before_dedup: int,
+    rows_after_dedup: int,
+    raw_train: pd.DataFrame,
+    raw_test: pd.DataFrame,
+    config: PipelineConfig,
+) -> pd.DataFrame:
+    invalid_counts = parsed_df["salary_parse_status"].value_counts(dropna=False).to_dict()
+    rows = [
+        {"metric": "raw_rows", "value": raw_rows},
+        {"metric": "salary_valid_rows_before_dedup", "value": valid_rows_before_dedup},
+        {"metric": "rows_after_dedup", "value": rows_after_dedup},
+        {"metric": "train_rows", "value": len(raw_train)},
+        {"metric": "test_rows", "value": len(raw_test)},
+        {"metric": "test_size", "value": config.test_size},
+        {"metric": "random_state", "value": config.random_state},
+        {"metric": "remove_salary_mentions", "value": config.remove_salary_mentions},
+    ]
+    for status, count in invalid_counts.items():
+        rows.append({"metric": f"salary_status_{status}", "value": int(count)})
+    return pd.DataFrame(rows)
+
+
+def train_test_salary_distribution(raw_train: pd.DataFrame, raw_test: pd.DataFrame) -> pd.DataFrame:
+    rows = []
+    for split, frame in [("train", raw_train), ("test", raw_test)]:
+        salary = frame["salary_expected_million_vnd"]
+        rows.append(
+            {
+                "split": split,
+                "rows": len(frame),
+                "ratio": len(frame) / (len(raw_train) + len(raw_test)),
+                "salary_mean": float(salary.mean()),
+                "salary_median": float(salary.median()),
+                "salary_std": float(salary.std()),
+                "salary_min": float(salary.min()),
+                "salary_max": float(salary.max()),
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def write_dataset_outputs(raw_train: pd.DataFrame, raw_test: pd.DataFrame, clean_train: pd.DataFrame, clean_test: pd.DataFrame, config: PipelineConfig) -> None:
+    raw_train.to_csv(config.raw_dir / "cluster_train_raw.csv", index=False)
+    raw_test.to_csv(config.raw_dir / "cluster_test_raw.csv", index=False)
+    clean_train.to_csv(config.clean_dir / "cluster_train_clean.csv", index=False)
+    clean_test.to_csv(config.clean_dir / "cluster_test_clean.csv", index=False)
+
+    # Backward-compatible names required by earlier submission instructions.
     raw_train.to_csv(config.raw_dir / "raw_data_train.csv", index=False)
     raw_test.to_csv(config.raw_dir / "raw_data_test.csv", index=False)
     clean_train.to_csv(config.clean_dir / "clean_data_train.csv", index=False)
     clean_test.to_csv(config.clean_dir / "clean_data_test.csv", index=False)
-    leakage_logs.to_csv(config.audit_dir / "clean_salary_leakage_summary.csv", index=False)
+
+
+def run_processing_pipeline(config: PipelineConfig) -> dict[str, Any]:
+    ensure_directories(config)
+    df = download_dataset(config.sample_size, config.dataset_id)
+    raw_rows = len(df)
+    df = add_salary_features(df, config)
+    df["salary_range_width"] = df["salary_max"] - df["salary_min"]
+    df = mark_invalid_targets(df)
+    valid_df = df.loc[df["target_is_valid"]].copy()
+    valid_rows_before_dedup = len(valid_df)
+    valid_df, outlier_summary = flag_outliers(valid_df)
+    valid_df, near_duplicate_audit = deduplicate(valid_df)
+    rows_after_dedup = len(valid_df)
+    raw_train, raw_test = split_dataset(valid_df, config)
+    clean_train, salary_mention_train = apply_cleaning(raw_train, remove_salary_mentions=config.remove_salary_mentions)
+    clean_test, salary_mention_test = apply_cleaning(raw_test, remove_salary_mentions=config.remove_salary_mentions)
+
+    salary_mention_logs = (
+        pd.concat([salary_mention_train.assign(split="train"), salary_mention_test.assign(split="test")], ignore_index=True)
+        .groupby("column", as_index=False)
+        .agg(
+            rows_with_salary_mentions=("rows_with_salary_mentions", "sum"),
+            salary_mention_ratio=("salary_mention_ratio", "mean"),
+            salary_mentions_removed=("salary_mentions_removed", "max"),
+        )
+    )
+
+    parser_tests = parser_test_cases(config)
+    if not bool(parser_tests["passed"].all()):
+        failed = parser_tests.loc[~parser_tests["passed"], ["salary", "expected", "expected_status", "salary_expected_million_vnd", "salary_parse_status"]]
+        raise AssertionError(f"Salary parser test cases failed:\n{failed.to_string(index=False)}")
+
+    write_dataset_outputs(raw_train, raw_test, clean_train, clean_test, config)
+    salary_mention_logs.to_csv(config.audit_dir / "clean_salary_mention_summary.csv", index=False)
+    salary_mention_logs.to_csv(config.audit_dir / "clean_salary_leakage_summary.csv", index=False)
     near_duplicate_audit.to_csv(config.audit_dir / "near_duplicate_audit.csv", index=False)
     pd.DataFrame([outlier_summary]).to_csv(config.audit_dir / "salary_outlier_summary.csv", index=False)
+    salary_parse_audit(df).to_csv(config.audit_dir / "salary_parse_audit.csv", index=False)
+    parser_tests.to_csv(config.audit_dir / "salary_parser_tests.csv", index=False)
+    processing_summary(raw_rows, df, valid_rows_before_dedup, rows_after_dedup, raw_train, raw_test, config).to_csv(
+        config.audit_dir / "processing_summary.csv",
+        index=False,
+    )
+    train_test_salary_distribution(raw_train, raw_test).to_csv(config.audit_dir / "train_test_salary_distribution.csv", index=False)
+    data_dictionary().to_csv(config.audit_dir / "data_dictionary.csv", index=False)
     pd.concat([raw_train, raw_test], ignore_index=True).loc[lambda frame: frame["is_salary_outlier"]].head(200).to_csv(
         config.audit_dir / "salary_outlier_examples.csv",
         index=False,
     )
-    pd.DataFrame(
-        [
-            {"split": "train", "rows": len(raw_train), "target_mean": float(raw_train["salary_expected_million_vnd"].mean()), "target_median": float(raw_train["salary_expected_million_vnd"].median())},
-            {"split": "test", "rows": len(raw_test), "target_mean": float(raw_test["salary_expected_million_vnd"].mean()), "target_median": float(raw_test["salary_expected_million_vnd"].median())},
-        ]
+    train_test_salary_distribution(raw_train, raw_test).rename(
+        columns={"salary_mean": "target_mean", "salary_median": "target_median"}
     ).to_csv(config.audit_dir / "train_test_target_distribution.csv", index=False)
     create_cleaning_figures(pd.concat([raw_train.assign(split="train"), raw_test.assign(split="test")]), config.figures_dir)
     return {
@@ -656,18 +819,20 @@ def run_processing_pipeline(config: PipelineConfig) -> dict[str, Any]:
         "clean_train": clean_train,
         "clean_test": clean_test,
         "outlier_summary": outlier_summary,
-        "leakage_logs": leakage_logs,
+        "salary_mention_logs": salary_mention_logs,
+        "parser_tests": parser_tests,
     }
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Processing pipeline for the Vietnamese job description salary project.")
+    parser = argparse.ArgumentParser(description="Processing pipeline for Vietnamese job clustering.")
     parser.add_argument("--mode", choices=["eda", "process"], default="process")
     parser.add_argument("--data-dir", default="artifacts")
     parser.add_argument("--sample-size", type=int, default=None)
     parser.add_argument("--usd-to-vnd", type=float, default=25000.0)
-    parser.add_argument("--test-size", type=float, default=0.2)
+    parser.add_argument("--test-size", type=float, default=0.1)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--remove-salary-mentions", action="store_true", help="Optionally remove explicit salary mentions from long text columns.")
     return parser.parse_args()
 
 
@@ -679,6 +844,7 @@ def main() -> None:
         test_size=args.test_size,
         random_state=args.random_state,
         sample_size=args.sample_size,
+        remove_salary_mentions=args.remove_salary_mentions,
     )
     if args.mode == "eda":
         df = run_raw_eda(config)
@@ -693,6 +859,7 @@ def main() -> None:
     print(f"Clean train rows: {len(results['clean_train']):,}")
     print(f"Clean test rows: {len(results['clean_test']):,}")
     print(f"Outlier summary: {results['outlier_summary']}")
+    print(f"Parser tests passed: {bool(results['parser_tests']['passed'].all())}")
 
 
 if __name__ == "__main__":
