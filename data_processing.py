@@ -82,6 +82,7 @@ MILLION_REGEX = re.compile(
     r"\b(?:trieu|triệu)\b|\btr\b|(?<=\d)(?:tr|trieu|triệu)\b",
     re.IGNORECASE,
 )
+VND_UNIT_REGEX = re.compile(r"\b(?:vnd|vnđ|dong)\b|(?<!\w)đ(?!\w)", re.IGNORECASE)
 
 
 @dataclass
@@ -232,7 +233,7 @@ def classify_salary_pattern(text: str) -> str:
     has_range = bool(RANGE_SPLIT_REGEX.search(text))
     has_number = bool(NUMBER_TOKEN_REGEX.search(text))
     has_usd = "usd" in text or "$" in text
-    has_vnd = any(token in text for token in ["vnd", "vnđ", "trieu", "triệu", "tr", "dong", "đ"])
+    has_vnd = bool(MILLION_REGEX.search(text) or VND_UNIT_REGEX.search(text))
     if has_range and has_number:
         return "range_usd" if has_usd else "range_vnd" if has_vnd else "range_unknown"
     if has_number:
@@ -273,7 +274,7 @@ def parse_number_token(token: str, currency_hint: str) -> float | None:
 def infer_currency(text: str) -> str | None:
     if "usd" in text or "$" in text:
         return "usd"
-    if any(token in text for token in ["trieu", "triệu", "vnd", "vnđ", "dong", "đ", "tr "]):
+    if MILLION_REGEX.search(text) or VND_UNIT_REGEX.search(text):
         return "vnd"
     return None
 
@@ -287,7 +288,7 @@ def convert_to_million_vnd(value: float, currency: str, text: str, config: Pipel
     # thay vì chia cho 1,000,000, tạo ra outlier ảo 8,000,000 triệu VNĐ.
     if MILLION_REGEX.search(text):
         return value
-    if any(token in text for token in ["vnd", "vnđ", "dong", "đ"]):
+    if VND_UNIT_REGEX.search(text):
         return value / 1_000_000.0
     return value
 
@@ -643,9 +644,14 @@ def parser_test_cases(config: PipelineConfig) -> pd.DataFrame:
     test_cases = [
         {"salary": "26 - 36 triệu", "expected": 31.0, "expected_status": "valid"},
         {"salary": "15 - 35 triệu", "expected": 25.0, "expected_status": "valid"},
+        {"salary": "15tr", "expected": 15.0, "expected_status": "valid"},
+        {"salary": "15 tr", "expected": 15.0, "expected_status": "valid"},
+        {"salary": "15tr - 20tr", "expected": 17.5, "expected_status": "valid"},
+        {"salary": "15 - 20 tr", "expected": 17.5, "expected_status": "valid"},
         {"salary": "4000 usd", "expected": 100.0, "expected_status": "valid"},
         {"salary": "1200 usd", "expected": 30.0, "expected_status": "valid"},
         {"salary": "14.000.000 - 20.000.000 vnd", "expected": 17.0, "expected_status": "valid"},
+        {"salary": "8,000,000 VND TRỞ LÊN", "expected": 8.0, "expected_status": "valid"},
         {"salary": "thỏa thuận", "expected": np.nan, "expected_status": "ambiguous"},
         {"salary": "đang cập nhật", "expected": np.nan, "expected_status": "invalid"},
     ]

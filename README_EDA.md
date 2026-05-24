@@ -1,61 +1,165 @@
-# Báo cáo Tổng quan Notebook 03: EDA, Distribution Shift & Feature Engineering
+# Báo cáo Notebook 03: EDA, Distribution Shift & Feature Engineering
 
-Notebook này là trái tim của quá trình biến đổi dữ liệu, nơi dữ liệu thô được phân tích sâu sắc (EDA) để tìm ra các quy luật, sau đó ứng dụng chính các quy luật này để tạo ra các đặc trưng mạnh mẽ cho mô hình Machine Learning (Feature Engineering).
+Notebook 03 chuẩn bị dữ liệu đầu vào cho bài toán **phân cụm việc làm Việt Nam**. Phạm vi của notebook này là: hiểu dữ liệu sạch sau preprocessing, kiểm tra train/test distribution shift, tạo feature text-only không rò rỉ nhãn ngành, giảm chiều và xuất artifact để người làm clustering dùng tiếp.
 
-Mọi dòng code tạo Feature ở nửa sau Notebook đều được "bảo chứng" bởi các biểu đồ ở nửa đầu Notebook.
+Notebook này **không chọn số cụm và không tạo kết quả clustering cuối cùng**. Cell MiniBatchKMeans cuối notebook chỉ là sanity check để kiểm tra embedding có thể phân cụm, không phải model chính thức.
 
----
+## 1. EDA Dữ Liệu Sạch
 
-## PHẦN 1: KHÁM PHÁ DỮ LIỆU (EXPLORATORY DATA ANALYSIS)
+Notebook đọc dữ liệu từ `artifacts/clean/clean_data_train.csv` và `artifacts/clean/clean_data_test.csv`, mặc định với `SAMPLE_SIZE = 20000` để phát triển nhanh. Khi cần artifact cuối trên toàn bộ dữ liệu, đổi `SAMPLE_SIZE = None` và chạy lại notebook.
 
-Mục tiêu của phần này không phải là vẽ biểu đồ cho đẹp, mà là tìm ra **"Tín hiệu" (Signal)** để hướng dẫn cho bước Feature Engineering.
+Các kiểm tra chính:
 
-### 1. Phân tích Đơn biến & Đa biến cơ bản
-- **Biểu đồ Histogram & KDE (Biến mục tiêu - Lương):**
-  - *Ý nghĩa:* Cho thấy phân bố lương bị lệch phải (Right-skewed) rõ rệt, đa số tập trung ở mức trung bình - thấp, thưa thớt ở mức siêu cao.
-  - *Vai trò:* Nhắc nhở người làm Modeling (Phase sau) ưu tiên sử dụng các mô hình Tree-based (như XGBoost, Random Forest) vì chúng miễn nhiễm với Outlier, hoặc cân nhắc dùng Log Transform.
-- **Biểu đồ Countplot (Tần suất danh mục):**
-  - *Ý nghĩa:* Phát hiện sự mất cân bằng (Imbalance) nghiêm trọng ở các cột `Location` hoặc `Job Industry` (một số tỉnh thành chỉ có vài tin tuyển dụng).
-  - *Vai trò:* Quyết định chiến lược **Rare Grouping** ở Bước 3.2 (gom các tỉnh lẻ thành nhóm `'other'`) trước khi One-hot Encoding để chống bùng nổ số chiều.
-- **Biểu đồ Boxplot & Violin Plot (Lương theo Kinh nghiệm / Học vấn):**
-  - *Ý nghĩa:* Chứng minh mối quan hệ tỷ lệ thuận (Monotonic): Kinh nghiệm càng cao -> Lương càng cao.
-  - *Vai trò:* Cung cấp cơ sở toán học để dùng **Ordinal Encoding** (0, 1, 2, 3...) ở Bước 3.2 thay vì One-Hot Encoding, giúp mô hình giữ lại được thứ bậc lớn-bé của kinh nghiệm.
+- Schema, kiểu dữ liệu, missing value và số dòng train/test.
+- Phân phối salary, salary outlier và log salary.
+- Độ dài `job_description`, `requirements`, `benefits`, `final_text`.
+- Phân phối metadata như `job_industry`, `experience_level`, `job_type`, `education_level`, `job_position`, `location_simplified`.
+- Tần suất unigram/ngram để hiểu các từ/cụm từ phổ biến trong JD.
 
-### 2. Nhóm Biểu đồ Text EDA (Khám phá Dữ liệu Văn bản)
-Đây là phần "ăn điểm" nhất, phân tích sâu vào mỏ vàng cốt lõi của bài toán là Job Description (JD).
+Ý nghĩa với bài toán:
 
-- **TEXT-EDA 1: Phân bố độ dài JD (Word Count):**
-  - *Ý nghĩa:* Tin tuyển dụng dài (>350 từ) thường có trung vị lương cao hơn (vì mô tả vị trí quản lý, senior thường rất chi tiết).
-  - *Vai trò:* Cung cấp bằng chứng để tạo thêm đặc trưng dạng số `jd_word_count`.
-- **TEXT-EDA 2: Phân tích N-gram (Bigrams & Trigrams):**
-  - *Ý nghĩa:* Phát hiện các cụm 2-3 từ thường đi liền nhau mang ý nghĩa hoàn chỉnh trong tiếng Việt (VD: "bảo hiểm y tế", "quản lý dự án").
-  - *Vai trò:* Tối ưu hóa bộ công cụ Regex ở Bước 3.1, đảm bảo bắt đúng nguyên cụm từ thay vì bắt nhầm các từ đơn lẻ.
-- **TEXT-EDA 3: Boxplot Phân Bố Lương Theo Từ Khóa Tiêu Biểu:**
-  - *Ý nghĩa:* Bốc ngẫu nhiên 4 từ khóa tiêu biểu (Quản lý, Dự án, Tiếng Anh, Hỗ trợ) để vẽ Boxplot so sánh. Thấy rõ sự xuất hiện của từ "Tiếng Anh" hay "Quản lý" đẩy toàn bộ hộp phân bố lương lên cao.
-  - *Vai trò:* Đây là bước **Validation (Kiểm chứng) sớm**. Nó đập tan mọi nghi ngờ của hội đồng, minh chứng bằng hình ảnh rằng: *Việc trích xuất Keyword Boolean (0/1) ở Phần 3 mang lại tín hiệu phân loại cực kỳ mạnh mẽ.*
+- Salary có phân phối lệch phải và có outlier, nên chỉ giữ để profile cụm thay vì đưa trực tiếp vào feature clustering.
+- Text của JD/title/requirements/benefits là nguồn tín hiệu chính để mô hình tự phát hiện nhóm việc làm.
+- Metadata categorical rất hữu ích để mô tả và kiểm tra cụm sau này, nhưng không nên dùng làm input clustering vì có thể ép cụm theo nhãn có sẵn.
 
----
+## 2. Distribution Shift
 
-## PHẦN 2: DISTRIBUTION SHIFT (ĐÁNH GIÁ SỰ DỊCH CHUYỂN PHÂN BỐ)
+Notebook so sánh train/test bằng:
 
-- **Overlapping KDE & Class Distribution (So sánh Train vs Test):**
-  - *Ý nghĩa:* Dùng đồ thị để chứng minh đường cong phân bố của tập Train và tập Test khớp nhau hoàn hảo. Tỷ lệ các nhãn (Kinh nghiệm, Học vấn) giữa hai tập cũng đồng nhất.
-  - *Vai trò:* Đảm bảo không xảy ra hiện tượng **Covariate Shift** (Dịch chuyển biến đầu vào) hay **Target Shift** (Dịch chuyển biến mục tiêu). Đây là tấm vé bảo hành chứng minh mô hình huấn luyện trên Train sẽ tổng quát hóa (generalize) rất tốt khi dự đoán trên Test.
+- KS test cho biến numeric: `salary_expected_million_vnd`, `log_salary_expected`, `salary_range_width`, `final_text_length`.
+- Chênh lệch tỷ lệ cho categorical: `job_type`, `experience_level`, `education_level`, `job_position`, `job_industry`, `location_simplified`.
 
----
+Kết quả hiện tại cho thấy train/test không lệch đáng kể ở các biến quan trọng. Điều này giúp người làm clustering yên tâm fit pipeline trên train và transform/demo trên test mà không gặp shift lớn.
 
-## PHẦN 3: FEATURE ENGINEERING (KỸ THUẬT ĐẶC TRƯNG)
+Lưu ý: trong clustering không có target supervised. Vì vậy `job_industry` không phải nhãn train, mà là metadata dùng để đánh giá ngoại sinh và giải thích cụm.
 
-Phần này là nơi chuyển hóa toàn bộ Insight từ Phần 1 thành ma trận số học để đưa vào mô hình.
+## 3. Feature Engineering
 
-- **3.1. Keyword Matching (Trích xuất từ khóa thủ công):**
-  - Kế thừa bộ từ điển từ N-gram, chạy các biểu thức Regex an toàn với tiếng Việt (Sử dụng ranh giới từ `(?:^|\W)`) để tạo ra 19 cột nhị phân (0/1) cho các Kỹ năng công nghệ, Kỹ năng mềm, Ngoại ngữ và Phúc lợi.
-- **3.2. Categorical Encoding (Mã hóa phân loại):**
-  - Áp dụng triệt để định hướng từ EDA: Dùng Ordinal Encoding cho Kinh nghiệm/Học vấn; gom nhóm Rare Grouping rồi mới One-Hot Encoding cho Location/Job Industry.
-- **3.3. NLP & Text Vectorization (TF-IDF + TruncatedSVD):**
-  - Giải quyết phần "văn bản dư thừa" chưa được quét bởi Keyword Matching. 
-  - **Kỹ thuật chống Data Leakage:** Áp dụng Regex "phẫu thuật" xóa mọi con số liên quan đến tiền bạc/tiền lương trong văn bản để mô hình không học vẹt.
-  - **Giảm chiều dữ liệu:** Dùng `TruncatedSVD` để nén ma trận thưa (Sparse) khổng lồ 5000 chiều của TF-IDF xuống thành một ma trận đặc (Dense) gọn gàng (dựa trên thuật toán Diagnostic tự tìm điểm bão hòa phương sai). Tối ưu hóa cực độ tốc độ chạy của mô hình học máy sau này.
-- **3.4. Trực quan hóa không gian đặc trưng bằng t-SNE 2D:**
-  - *Ý nghĩa:* Ép không gian hàng trăm chiều của ma trận đặc trưng cuối cùng xuống mặt phẳng 2D.
-  - *Vai trò:* Biểu đồ chốt hạ (Final Validation). Nếu trên biểu đồ t-SNE, các điểm dữ liệu Lương Cao và Lương Thấp tạo thành những cụm (cluster) có thể phân tách được, điều đó khẳng định: **Toàn bộ quá trình Feature Engineering của chúng ta đã thành công xuất sắc!**
+Pipeline đã được sửa theo hướng **text-only, không leakage**:
+
+```text
+job_title + job_description + requirements + benefits
+-> TF-IDF
+-> TruncatedSVD 300 chiều
+-> bỏ SVD component đầu tiên
+-> UMAP 10 chiều
+```
+
+Các cột được dùng để tạo feature clustering:
+
+- `job_title`
+- `job_description`
+- `requirements`
+- `benefits`
+
+Các cột không đưa vào feature matrix, chỉ giữ làm metadata:
+
+- `job_industry`
+- `experience_level`
+- `job_type`
+- `education_level`
+- `job_position`
+- `location_simplified`
+- `salary_expected_million_vnd`, `salary_min`, `salary_max`, `salary_range_width`
+- `is_salary_outlier`
+- các text length features
+
+Lý do không dùng `job_industry` và OHE:
+
+- Mục tiêu clustering là để thuật toán tự phát hiện nhóm việc làm từ nội dung JD.
+- Nếu đưa `job_industry` vào input, mô hình có thể học lại nhãn ngành có sẵn thay vì học ngữ nghĩa văn bản.
+- Không còn `OneHotEncoder`, `OHE_WEIGHT`, hoặc categorical feature trong `X_train_features`.
+
+TF-IDF hiện dùng:
+
+- `max_features=30000`
+- `ngram_range=(1, 3)`
+- `min_df=20`
+- `max_df=0.40`
+- `sublinear_tf=True`
+- stopwords tiếng Việt đã được token hóa để tránh warning không nhất quán của `TfidfVectorizer`.
+
+## 4. Dimensionality Reduction & Validation
+
+Notebook dùng `TruncatedSVD` để nén TF-IDF sparse xuống 300 chiều, sau đó bỏ component đầu tiên trước khi đưa vào UMAP. Component đầu thường có thể chứa template/common wording, nên loại bỏ giúp embedding tập trung hơn vào tín hiệu phân biệt.
+
+UMAP tạo embedding 10 chiều để bàn giao cho clustering:
+
+- `X_train_umap.npy`
+- `X_test_umap.npy`
+
+Biểu đồ UMAP/t-SNE 2D được tô màu theo `job_industry` và `experience_level`, nhưng đây chỉ là **external validation/profiling**. Các metadata này không nằm trong input. Nếu màu ngành có xu hướng gom vùng, đó là tín hiệu text đã học được cấu trúc ngành nghề từ JD.
+
+Sanity check hiện tại:
+
+- `X_train_features`: TF-IDF text-only, shape `(20000, 30000)`.
+- `X_train_svd`: shape `(20000, 300)`.
+- `X_train_umap`: shape `(20000, 10)`.
+- `numeric_features_used_for_clustering = 0`.
+- `metadata_features_used_for_clustering = 0`.
+
+## 5. Artifact Bàn Giao
+
+Các file chính cho người làm clustering:
+
+```text
+artifacts/features/X_train_umap.npy
+artifacts/features/X_test_umap.npy
+artifacts/features/train_metadata.csv
+artifacts/features/test_metadata.csv
+artifacts/features/feature_pipeline.joblib
+artifacts/features/tfidf_model.joblib
+artifacts/features/svd_model.joblib
+artifacts/features/umap_model.joblib
+```
+
+Các file phụ hữu ích:
+
+```text
+artifacts/features/X_train_features.npz
+artifacts/features/X_test_features.npz
+artifacts/features/X_train_svd.npy
+artifacts/features/X_test_svd.npy
+artifacts/features/feature_engineering_summary.csv
+artifacts/features/distribution_shift_numeric.csv
+artifacts/features/distribution_shift_categorical.csv
+```
+
+Ví dụ load dữ liệu:
+
+```python
+import numpy as np
+import pandas as pd
+from scipy import sparse
+import joblib
+
+X_train = np.load("artifacts/features/X_train_umap.npy")
+X_test = np.load("artifacts/features/X_test_umap.npy")
+train_meta = pd.read_csv("artifacts/features/train_metadata.csv")
+test_meta = pd.read_csv("artifacts/features/test_metadata.csv")
+
+pipeline = joblib.load("artifacts/features/feature_pipeline.joblib")
+tfidf = joblib.load("artifacts/features/tfidf_model.joblib")
+svd = joblib.load("artifacts/features/svd_model.joblib")
+umap_model = joblib.load("artifacts/features/umap_model.joblib")
+```
+
+## 6. Ghi Chú Cho Người Làm Clustering
+
+Người làm clustering nên:
+
+- Fit thuật toán clustering trên `X_train_umap.npy`.
+- Dùng `X_test_umap.npy` để demo/kiểm tra gán cụm trên test, không fit lại TF-IDF/SVD/UMAP trên test.
+- Thử nhiều cấu hình như KMeans với nhiều `k`, HDBSCAN hoặc Agglomerative nếu phù hợp.
+- Báo cáo metrics phổ biến: silhouette, Davies-Bouldin, Calinski-Harabasz; nếu dùng HDBSCAN thì thêm số cụm và noise ratio.
+- Gắn `cluster_id` vào `train_metadata.csv`.
+- Profile từng cụm bằng metadata: top `job_industry`, top `job_title`, top từ khóa trong JD, `experience_level` phổ biến, salary median, top location/job type.
+- Tự đặt nhãn cụm dựa trên thuộc tính phổ biến, ví dụ: Sales/CSKH, Kế toán/Tài chính, Kỹ thuật/Sản xuất, Marketing/Nội dung.
+
+Không nên:
+
+- Fit clustering trực tiếp trên `job_industry`.
+- Dùng `job_industry` làm feature đầu vào.
+- Diễn giải UMAP/t-SNE tô màu metadata như bằng chứng supervised. Đó chỉ là kiểm tra ngoại sinh sau khi embedding đã được học từ text.
+
+Kết luận: Notebook 03 đã hoàn thành vai trò EDA, distribution shift và feature engineering. Output đã đủ sạch và đủ thông tin để bàn giao cho bước clustering chính thức.
